@@ -19,8 +19,6 @@ dimensions, wheels and arm kinematics match the real robot.
 - Cyberpunk 2077 on PC, at a game version supported by the current Cyber Engine Tweaks
 - [Cyber Engine Tweaks](https://www.nexusmods.com/cyberpunk2077/mods/107) (CET)
 
-That's all. It doesn't need RED4ext, ArchiveXL, Codeware or Appearance Menu Mod.
-
 ## Install
 
 1. Download `eddie_robot-<version>.zip` from the
