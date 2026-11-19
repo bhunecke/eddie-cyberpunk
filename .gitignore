@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+
+# build output (build_glb.py, install_wolvenkit.py --package)
+cyberpunk/out/
+dist/
+
+# robot description packages, cloned by cyberpunk/fetch_deps.py
+deps/
+
+# WolvenKit: imported source files, packed build, editor UI state
+wolvenkit/source/raw/
+wolvenkit/packed/
+wolvenkit/.projectFiles/
+wolvenkit/layout.xml
+
+# local tool settings
+.claude/

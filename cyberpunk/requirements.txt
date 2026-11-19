@@ -1,0 +1,13 @@
+# build_glb.py / install_wolvenkit.py / make_preview.py
+numpy
+scipy
+trimesh
+pyfqmr
+fast-simplification
+pycollada
+lxml
+networkx
+pillow
+pygltflib
+# test_mod.py
+lupa
