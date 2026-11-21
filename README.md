@@ -12,6 +12,8 @@ dimensions, wheels and arm kinematics match the real robot.
 - **Wheels:** the drive units swivel like castors and the wheels roll at ground speed.
 - **Riding:** stand on top of the torso and drive with W/A/S/D and the mouse.
 - **Arms:** poses (rest, reach, arms up, wave), and grippers that open and close.
+- **Weapons:** hand Eddie a copy of the weapon you have drawn. It holds it in a gripper,
+  shoots at whoever you hit, and in Guard mode finds and fights enemies on its own.
 - **Collision:** V, NPCs and bullets collide with Eddie.
 
 ## Requirements
@@ -44,18 +46,24 @@ and use the **Eddie** window:
 |---|---|
 | Spawn in front of V / Despawn all | The newest Eddie is the one you control |
 | Follow V | Keeps about 2 m from V and faces V |
+| Guard | Follows V and fights on its own: picks the nearest enemy that's fighting V, closes in to about 10 m or until it has a clear shot (never more than 20 m from V), aims and fires. Needs a weapon |
 | Go where I look | Drives to the spot under the crosshair (up to 40 m) |
 | Manual | Drive with the keys bound to the `eddie_*` inputs (see below) |
 | Stop | Stops driving |
 | Ride / Get off | V stands on top of the torso (walk within 10 m first). **W/A/S/D** drive relative to where you look, the **mouse** steers, **Jump** gets off |
 | Speed | 0.2–2 m/s |
 | Rest, Reach, Arms up, Wave | Arm poses |
-| Close / Open grippers | Grippers |
+| Close / Open grippers | Grippers. Opening them while Eddie holds a weapon drops it |
+| Give: right hand / left hand | Eddie gets a copy of the weapon V has drawn, in that gripper, and raises its arms to Reach |
+| Drop weapons | Eddie lets go; the weapons fall to the floor and V can pick them up |
+| Fire once (test) | One shot along the barrel |
+| Shoot what I shoot | On by default: when you hit someone, an armed Eddie turns to them, aims and fires until they're down, out of range (40 m) or gone. Works in every mode; in Guard mode your hits pick its target |
 
 Under **Bindings → eddie_spawner** in the CET overlay you can bind:
 
-- **Hotkeys:** spawn, despawn, follow, go where I look, stop, ride / get off, each arm
-  pose, and grippers.
+- **Hotkeys:** spawn, despawn, follow, guard, go where I look, stop, ride / get off, each
+  arm pose, grippers, give weapon (right / left hand), drop weapons, fire once, and
+  shoot what I shoot on / off.
 - **Inputs** (hold to drive): forward, back, strafe left / right, turn left / right.
   Pressing one switches to Manual.
 
@@ -64,6 +72,11 @@ Under **Bindings → eddie_spawner** in the CET overlay you can bind:
 - Eddie moves kinematically: it slides along the floor with ground and wall probes and
   doesn't get pushed around by physics. It stops at walls, drops and steps over 4 cm.
 - The arm collision boxes stay in the rest pose.
+- The weapon is a fresh copy of the same item (not your upgraded one, and V keeps hers),
+  so picking it up off the floor gives V an extra one.
+- Eddie's shots count as yours: police and gangs react as if you fired them.
+- Only the gun turns to aim; the arms stay in their pose. Eddie holds fire when a wall is
+  in the way, but its line-of-fire check is a single ray.
 - While riding, only Eddie's base is checked against walls, so V's head can pass through
   low ceilings.
 - If you save while riding, V can't walk after that save is loaded. To fix it, press the

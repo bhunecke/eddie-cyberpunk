@@ -55,8 +55,9 @@ The CET mod lives in
 ```
 
 This runs the CET mod against a mocked CET and game API. It checks spawning, follow, go
-to, manual driving, walls, the castors and wheel spin, riding, and the arm poses and
-grippers against `build_glb.py`'s kinematics. It runs once for each possible game yaw
+to, manual driving, walls, the castors and wheel spin, riding, the arm poses and
+grippers against `build_glb.py`'s kinematics, holding and dropping weapons, firing, shooting what V hits,
+and Guard mode with mock enemies. It runs once for each possible game yaw
 convention. It needs `out/` and `eddie_parts.lua`, so run it after the build.
 
 ## Preview
@@ -144,6 +145,39 @@ spawn the robot 2 m in front of V or despawn it, and to drive the newest one:
     component, placed every frame from the joint values (forward kinematics over
     `eddie_parts.lua` → `arms`). Only the joint values change while the arms move.
   - **Collision:** the arm collision boxes stay where the arms are at rest.
+
+- **Weapons**:
+  - **Give: right / left hand** (hotkeys `eddie_weapon_right`, `eddie_weapon_left`):
+    Eddie gets a copy of the weapon in V's right-hand slot (`AttachmentSlots.WeaponRight`):
+    a new item of the same TweakDB record, spawned with the game's loot manager
+    (`SpawnItemDrop`) as a world drop. V keeps her own weapon.
+  - **Holding:** every frame the drop is teleported to the gripper's tool point (13 cm
+    out from the gripper base), the barrel along the fingers. It's turned about that axis
+    so it's upright in the Reach pose, which the arms go to if they were at rest. The
+    gripper closes to 0.45 on it. It follows the arms in any pose, and while driving or riding.
+  - **Finding the drop:** `SpawnItemDrop` only drops an item its owner has, so the copy is
+    given to V first and goes straight back out. Its return value is false even when it
+    works, so the drop is caught when it appears (`gameItemDropObject.OnGameAttached`,
+    within 0.75 m of where it was asked for), with a targeting-system scan as a fallback.
+    Only the drop is moved; the weapon object follows it.
+  - **Letting go:** Drop weapons (`eddie_weapon_drop`), opening the grippers, or
+    despawning. The game no longer simulates a drop that has been moved every frame, so
+    the mod lets it fall itself: under gravity, turning onto its side, onto the floor
+    below the gripper. If V picks it up from Eddie's hand, the gripper opens.
+  - **Firing:** `AIWeapon.Fire` on the weapon object, with V as the owner (like the
+    vanilla sniper nest), at the weapon's own trigger mode and rate
+    (`AIWeapon.GetNextShotTimeStamp`). Fire once (`eddie_weapon_fire_test`) shoots along the barrel.
+  - **Shoot what I shoot** (`eddie_combat`): `NPCPuppet.OnHit` from V (not from Eddie's own
+    guns) picks the target. Eddie faces it, the gun swings onto its chest (within 75° of
+    the heading) and fires within 20°, while a ray from the gun to the target is clear, until it's
+    dead, defeated, out of range (40 m) or gone.
+  - **Guard** (`eddie_guard`): every 0.5 s it looks for characters in
+    `NPCPuppet.IsInCombatWithTarget(npc, V)` within 40 m, nearest first, preferring ones
+    with a clear shot. It drives to 10 m from the target (2 m without a clear shot),
+    never further than 20 m from V, and follows V when it's quiet.
+  - **Tuning:** `WEAPON_OFFSET`, `HOLD_CLOSURE`, and the constants at the top of the combat
+    and guard sections in `init.lua` (`COMBAT_RANGE`, `AIM_CONE`, `FIRE_CONE`, `CHEST`,
+    `GUARD_DISTANCE`, `GUARD_LEASH`, …).
 
 Hotkeys and inputs are bound in the CET overlay under Bindings → eddie_spawner.
 Movement is kinematic (the entity is teleported every frame), with a floor probe

@@ -31,6 +31,20 @@ local player = { x = 0, y = 0, z = 0, yaw = 30 }
 local cam = { x = 0, y = 0, z = -1 }
 local teleports = { n = 0 }
 local entities = {}
+local weapon = { held = true, record = "Items.Preset_Lexington_Default", delay = 3 }
+local drops = {}
+local pendingDrops = {}
+local inventory = { n = 0 } -- items given to V that she still has (not counting her own gear)
+local lootRefuses = false
+local hookOff = false
+local nextId = 0
+local function newId() nextId = nextId + 1; return nextId end
+TweakDBID = { new = function(s) return { tdb = s } end }
+ItemID = { FromTDBID = function(t) return { id = t, fresh = true } end, GetTDBID = function(i) return i.id end }
+function GetSingleton(name)
+  assert(name == "Quaternion")
+  return { ToEulerAngles = function(_, q) return { roll = 0, pitch = 0, yaw = 0, _q = q } end }
+end
 handlers = { events = {}, hotkeys = {}, inputs = {}, observers = {} }
 
 Vector4 = { new = function(x, y, z, w) return { x = x, y = y, z = z, w = w } end }
@@ -49,6 +63,38 @@ function Ent:FindComponentByName(n)
   return c
 end
 EulerAngles = { new = function(r, p, y) return { roll = r, pitch = p, yaw = y } end }
+function Ent:IsA(c) if c == "NPCPuppet" then return self.isNPC == true end return (c == "gameItemDropObject" and self.isDrop) or (c == "gameItemObject" and self.isItem) or (c == "gameweaponObject" and self.isItem) or false end
+function Ent:GetWorldPosition() return self.pos end
+function Ent:GetEntityID() return self.eid end
+function Ent:GetItemObject() return self.itemObj end
+function Ent:GetConnectedItemDrop() return self.drop end
+function Ent:IsAttached() return true end
+function Ent:IsDead() return self.dead or false end
+function Ent:IsDefeated() return false end
+-- in combat with V, as the game tracks it
+NPCPuppet = { IsInCombatWithTarget = function(npc, player) return npc.fighting == true end }
+-- a character V (or Eddie) can shoot at
+function spawnNPC(x, y, z)
+  local id = newId()
+  entities[id] = setmetatable({ pos = Vector4.new(x, y, z, 1), eid = id, isNPC = true }, Ent)
+  return entities[id]
+end
+function makeGun(eid) return setmetatable({ eid = eid }, Ent) end
+-- one hit on npc by V's attack with `weapon` (V's own gun, or one of Eddie's)
+function hitBy(npc, weapon)
+  local cb = handlers.observers["NPCPuppet.OnHit"]
+  local ad = { GetInstigator = function() return Game.GetPlayer() end, GetWeapon = function() return weapon end }
+  if cb then cb(npc, { attackData = ad }) end
+end
+function Ent:GetItemID() return self.itemID end
+local fires = {}
+AIWeapon = { Fire = function(owner, weapon, t, tbh, mode, pos, target)
+  fires[#fires + 1] = { owner = owner, weapon = weapon, t = t, tbh = tbh, mode = mode, pos = pos, target = target } end,
+  GetNextShotTimeStamp = function(weapon) return 12.5 + 0.1 end } -- sim time is 12.5: a shot every 0.1 s
+EngineTime = { ToFloat = function(t) return t.seconds end }
+TweakDBInterface = { GetWeaponItemRecord = function(id)
+  return { PrimaryTriggerMode = function() return { Type = function() return "FullAuto" end } end } end }
+gamedataTriggerMode = { SemiAuto = "SemiAuto" }
 
 local function fwd(yaw) local r = math.rad(yaw) return S * math.sin(r), math.cos(r) end
 
@@ -57,6 +103,7 @@ function P:GetWorldPosition() return Vector4.new(player.x, player.y, player.z, 1
 function P:GetWorldForward() local x, y = fwd(player.yaw) return Vector4.new(x, y, 0, 0) end
 function P:GetWorldYaw() return player.yaw end
 P.isPlayer = true
+function P:IsPlayer() return true end
 function P:GetEntityID() return "pid" end
 function P:GetRecordID() return "prec" end
 function P:RegisterInputListener(_, a) end
@@ -67,6 +114,30 @@ local ses = {
   RemoveStatusEffect = function(_, id, e) effects[e] = nil end,
 }
 function Observe(cls, fn, cb) handlers.observers[cls .. "." .. fn] = cb end
+ObserveAfter = Observe
+-- like the game: SpawnItemDrop only says whether it worked; the drop object shows up a few
+-- frames later, firing gameItemDropObject:OnGameAttached
+-- the drop object, and the weapon you see as its own ItemObject connected to it
+local function attachDrop(pos, item)
+  local id = newId()
+  local drop = setmetatable({ pos = pos, item = item, eid = id, isDrop = true }, Ent)
+  drop.itemObj = setmetatable({ pos = pos, isItem = true, drop = drop, itemID = item, eid = "item" .. id }, Ent)
+  entities[id] = drop
+  drops[#drops + 1] = id
+  local cb = handlers.observers["gameItemDropObject.OnGameAttached"]
+  if cb and not hookOff then cb(drop) end
+  return id
+end
+gameTargetSearchQuery = { new = function() return {} end }
+gameTargetingSet = { Complete = 3 }
+gametargetingTargetPartInfo = { GetComponent = function(part) return part end }
+function tick()
+  for i = #pendingDrops, 1, -1 do
+    local d = pendingDrops[i]
+    d.delay = d.delay - 1
+    if d.delay <= 0 then table.remove(pendingDrops, i); attachDrop(d.pos, d.item) end
+  end
+end
 ListenerAction = {
   GetName = function(a) return a.name end,
   GetType = function(a) return { value = a.kind } end,
@@ -89,7 +160,7 @@ function sqs:SyncRaycastByCollisionGroup(a, b, group, s, d)
   end
   if a.x < world.wall_x and b.x >= world.wall_x then
     local t = (world.wall_x - a.x) / (b.x - a.x)
-    return true, { position = { x = world.wall_x, y = a.y + (b.y - a.y) * t, z = a.z } }
+    return true, { position = { x = world.wall_x, y = a.y + (b.y - a.y) * t, z = a.z + (b.z - a.z) * t } }
   end
   return false, nil
 end
@@ -99,33 +170,72 @@ Game = {
   GetSpatialQueriesSystem = function() return sqs end,
   GetCameraSystem = function() return { GetActiveCameraForward = function() return Vector4.new(cam.x, cam.y, cam.z, 0) end } end,
   GetSystemRequestsHandler = function() return { IsPreGame = function() return false end, IsGamePaused = function() return false end } end,
-  FindEntityByID = function(id) return entities[id] end,
+  FindEntityByID = function(id)
+    assert(type(id) ~= "boolean", "FindEntityByID needs an EntityID")
+    return entities[id]
+  end,
+  GetTransactionSystem = function() return {
+    GetItemInSlot = function(_, owner, slot)
+      if weapon.held and owner.isPlayer and slot.tdb == "AttachmentSlots.WeaponRight" then
+        return { GetItemID = function() return { id = TweakDBID.new(weapon.record), seed = 7 } end }
+      end end,
+    GiveItem = function(_, owner, item, n)
+      assert(owner.isPlayer); inventory[item] = (inventory[item] or 0) + n; inventory.n = inventory.n + n; return true end,
+    RemoveItem = function(_, owner, item, n)
+      if (inventory[item] or 0) < n then return false end
+      inventory[item] = inventory[item] - n; inventory.n = inventory.n - n; return true end,
+  } end,
+  -- like the game: only drops an item the owner has, and takes it out of their inventory
+  GetLootManager = function() return { SpawnItemDrop = function(_, owner, item, pos, rot)
+    if lootRefuses or (inventory[item] or 0) < 1 then return false end
+    inventory[item] = inventory[item] - 1; inventory.n = inventory.n - 1
+    pendingDrops[#pendingDrops + 1] = { pos = pos, item = item, delay = weapon.delay }
+    return true end } end,
   GetTeleportationFacility = function() return { Teleport = function(_, e, p, r)
     if e.isPlayer then player.x, player.y, player.z, player.yaw = p.x, p.y, p.z, r.yaw; return end
-    teleports.n = teleports.n + 1; e.pos = p; e.yaw = r.yaw end } end,
+    teleports.n = teleports.n + 1; e.pos = p; e.yaw = r.yaw; e.rot = r; e.tpn = (e.tpn or 0) + 1 end } end,
   GetStatusEffectSystem = function() return ses end,
+  GetSimTime = function() return { seconds = 12.5 } end,
+  -- every drop's weapon object around V (the targeting query's view of them)
+  GetTargetingSystem = function() return { GetTargetParts = function(_, player, q)
+    local parts = {}
+    for _, e in pairs(entities) do
+      if e.isDrop then parts[#parts + 1] = { GetEntity = function() return e.itemObj end } end
+      if e.isNPC then parts[#parts + 1] = { GetEntity = function() return e end } end
+    end
+    return true, parts end } end,
   NameToString = function(n) return n end,
 }
 exEntitySpawner = {
-  Spawn = function(path, t, app) local id = #entities + 1; entities[id] = setmetatable({ pos = t.pos, yaw = t.rot.yaw }, Ent); return id end,
+  Spawn = function(path, t, app) local id = newId(); entities[id] = setmetatable({ pos = t.pos, yaw = t.rot.yaw }, Ent); return id end,
   Despawn = function(e) end,
 }
 function registerForEvent(n, f) handlers.events[n] = f end
 function registerHotkey(id, d, f) handlers.hotkeys[id] = f end
 function registerInput(id, d, f) handlers.inputs[id] = f end
 ImGui = {}
-return { world = world, player = player, cam = cam, entities = entities, teleports = teleports, effects = effects }
+return { world = world, player = player, cam = cam, entities = entities, teleports = teleports, effects = effects,
+         weapon = weapon, drops = drops, attachDrop = attachDrop, inventory = inventory,
+         fires = fires, setLootRefuses = function(v) lootRefuses = v end, setHookOff = function(v) hookOff = v end }
 """
 
 L = LuaRuntime(unpack_returned_tuples=True)
-L.execute("print = function(...) end")  # silence mod prints
+L.execute("LOG = {}; print = function(...) LOG[#LOG + 1] = table.concat({...}, ' ') end")  # keep mod prints quiet
+STATUS = lambda: " | ".join(L.globals().LOG.values())
 
 L.execute(f'package.path = "{MOD.as_posix()}/?.lua;" .. package.path')
 env = L.execute(MOCK, YAW_SIGN)
 L.execute(SRC)
 H = L.globals().handlers
 H.events["onInit"]()
-step = lambda secs: [H.events["onUpdate"](1 / 60) for _ in range(int(secs * 60))]
+TICK = L.globals().tick
+
+
+def step(secs):
+    for _ in range(int(secs * 60)):
+        TICK()
+        H.events["onUpdate"](1 / 60)
+
 ent = lambda: env.entities[1]
 pl = env.player
 
@@ -403,5 +513,181 @@ check("arms: rest FK matches the .ent placement", rest_place_err() < 1e-5, f"{re
 n0 = E2.comps["cn:eddie_part_l_arm_shoulder"].n
 step(1)
 check("arms: idle arms not touched", E2.comps["cn:eddie_part_l_arm_shoulder"].n == n0)
+
+# --- weapons: a copy of V's weapon, held at the tool point, barrel along the fingers
+def rz(theta, v):
+    c, s_ = math.cos(theta), math.sin(theta)
+    return (c * v[0] - s_ * v[1], s_ * v[0] + c * v[1], v[2])
+
+
+def held_err(side, drop):
+    """drop pose vs the gripper's tool point / finger direction, from the components the mod placed"""
+    c = E2.comps[f"cn:eddie_part_{side}_grip_base"]
+    tool = qrot(c.q, (0, 0, 0.13))
+    th = -YAW_SIGN * math.radians(E2.yaw)
+    w = rz(th, (c.p.x + tool[0], c.p.y + tool[1], c.p.z + tool[2]))
+    want = (E2.pos.x + w[0], E2.pos.y + w[1], E2.pos.z + w[2])
+    q = drop.rot._q
+    fwd = qrot(q, (0, 1, 0))
+    want_fwd = rz(th, qrot(c.q, (0, 0, 1)))
+    return math.dist((drop.pos.x, drop.pos.y, drop.pos.z), want), math.dist(fwd, want_fwd), qrot(q, (0, 0, 1))[2]
+
+
+def reach_q(lg=0.0, rg=0.0):
+    return dict(ARMS["vars"], **ARMS["poses"]["reach"], lg=lg, rg=rg)
+
+
+drops = env.drops
+env.weapon.held = False
+H.hotkeys["eddie_weapon_right"](); step(0.1)
+check("weapons: refused with no weapon drawn", len(drops) == 0)
+H.hotkeys["eddie_weapon_fire_test"]()
+check("fire test: asks for a weapon when Eddie holds none", len(env.fires) == 0 and STATUS().endswith("give Eddie a weapon first."))
+env.weapon.held = True
+env.attachDrop(L.table_from({"x": 50.0, "y": 50.0, "z": 0.0}), None)  # someone else's drop, far away
+H.hotkeys["eddie_weapon_right"](); step(0.1)
+check("weapons: a drop is spawned", len(drops) == 2)
+R1 = env.entities[drops[2]]
+check("weapons: it's a fresh copy of V's weapon", R1.item.fresh and R1.item.id.tdb == "Items.Preset_Lexington_Default")
+check("weapons: V's inventory is unchanged (the copy went straight into the drop)", env.inventory.n == 0)
+step(8)
+ep, ef, up = held_err("r", R1)
+check("weapons: held at the right tool point, barrel along the fingers", ep < 1e-6 and ef < 1e-6,
+      f"{ep:.2e} m, fwd off {ef:.2e}")
+check("weapons: weapon upright in the Reach pose", up > 0.9, f"up.z={up:.2f}")
+ep, _ = arm_err(reach_q(rg=0.45))
+check("weapons: arms go to Reach, right gripper closes on it", ep < 1e-5, f"{ep:.2e} m")
+H.inputs["eddie_fwd"](True); step(1.0)
+ep, ef, _ = held_err("r", R1)
+check("weapons: stays in the hand while driving", ep < 1e-6 and ef < 1e-6, f"{ep:.2e} m")
+check("weapons: only the drop is moved (the weapon object follows it)", R1.itemObj.rot is None)
+H.hotkeys["eddie_weapon_fire_test"]()
+f = env.fires[1] if len(env.fires) else None
+check("fire test: AIWeapon.Fire with V as owner and the held weapon object",
+      f is not None and f.owner.isPlayer and f.weapon.drop.eid == R1.eid and f.t == 12.5 and f.tbh == 1.0,
+      "" if f is None else f"isPlayer={f.owner.isPlayer} same={f.weapon.drop.eid == R1.eid} t={f.t} tbh={f.tbh}")
+def barrel_cos(drop, pos):
+    b = qrot(drop.rot._q, (0, 1, 0))
+    d = (pos.x - drop.pos.x, pos.y - drop.pos.y, pos.z - drop.pos.z)
+    return sum(x * y for x, y in zip(b, d)) / math.hypot(*d)
+
+
+check("fire test: the weapon's own trigger mode, fired along the barrel",
+      f is not None and f.mode == "FullAuto" and barrel_cos(R1, f.pos) > 1 - 1e-9 and f.target is None)
+check("fire test: reports what it found", "IsAttached true" in STATUS() and "AIWeapon.Fire called" in STATUS(),
+      STATUS().rsplit(" | ", 1)[-1])
+H.inputs["eddie_fwd"](False); step(1.5)
+
+# --- combat: Eddie shoots what V hits
+G = L.globals()
+npc = G.spawnNPC(E2.pos.x - 8, E2.pos.y + 1, 0.0)
+vgun = G.makeGun("vgun")
+n0 = len(env.fires)
+G.hitBy(npc, vgun); step(3)
+chest = (npc.pos.x, npc.pos.y, 1.2)
+face = angdiff(E2.yaw, yaw_to(npc.pos.x - E2.pos.x, npc.pos.y - E2.pos.y))
+check("combat: Eddie turns to face a character V hit", face < 1.0, f"{face:.2f} deg off")
+aimc = barrel_cos(R1, L.table_from({"x": chest[0], "y": chest[1], "z": chest[2]}))
+check("combat: the gun points at its chest", aimc > 1 - 1e-9, f"cos {aimc:.9f}")
+fl = env.fires[len(env.fires)] if len(env.fires) > n0 else None
+check("combat: and fires at it", fl is not None and fl.target is not None and fl.target.eid == npc.eid
+      and math.dist((fl.pos.x, fl.pos.y, fl.pos.z), chest) < 1e-9 and fl.owner.isPlayer)
+n1 = len(env.fires); step(1.0); rate = len(env.fires) - n1
+check("combat: at the weapon's own fire rate", 9 <= rate <= 11, f"{rate} shots/s (weapon: 10)")
+npc2 = G.spawnNPC(E2.pos.x - 8, E2.pos.y - 3, 0.0)
+G.hitBy(npc2, R1.itemObj); step(0.5)
+fl = env.fires[len(env.fires)]
+check("combat: Eddie's own hits don't pick a new target", fl.target.eid == npc.eid)
+npc.dead = True; step(0.2); n2 = len(env.fires); step(1.0)
+check("combat: stops when the target is down", len(env.fires) == n2 and "target down" in STATUS())
+ep, ef, _ = held_err("r", R1)
+check("combat: the gun swings back into the gripper", ep < 1e-6 and ef < 1e-6, f"fwd off {ef:.2e}")
+H.hotkeys["eddie_combat"](); G.hitBy(npc2, vgun); step(1.0)
+check("combat: off -> V's hits are ignored", len(env.fires) == n2)
+H.hotkeys["eddie_combat"]()
+
+# --- guard: Eddie finds and chases enemies on its own
+def last_fire():
+    return env.fires[len(env.fires)] if len(env.fires) else None
+
+
+pl.x, pl.y = E2.pos.x, E2.pos.y + 5
+H.hotkeys["eddie_guard"](); step(6)
+check("guard: follows V while it's quiet", 1.8 < dist(E2.pos.x, E2.pos.y, pl.x, pl.y) < 2.4,
+      f"{dist(E2.pos.x, E2.pos.y, pl.x, pl.y):.2f} m")
+calm = G.spawnNPC(E2.pos.x - 6, E2.pos.y + 2, 0.0)
+n3 = len(env.fires); step(2)
+check("guard: leaves characters alone that aren't fighting V", len(env.fires) == n3)
+foe = G.spawnNPC(E2.pos.x - 24, E2.pos.y - 2, 0.0)
+foe.fighting = True
+step(25)
+fl = last_fire()
+d_foe = dist(E2.pos.x, E2.pos.y, foe.pos.x, foe.pos.y)
+check("guard: picks an enemy fighting V by itself and shoots it", fl is not None and fl.target is not None
+      and fl.target.eid == foe.eid and len(env.fires) > n3)
+check("guard: closes in to firing distance", 9.0 < d_foe < 11.0, f"{d_foe:.2f} m from the enemy")
+face = angdiff(E2.yaw, yaw_to(foe.pos.x - E2.pos.x, foe.pos.y - E2.pos.y))
+check("guard: faces it", face < 1.0, f"{face:.2f} deg")
+pl.y = pl.y - 40; step(30)
+to_v = dist(E2.pos.x, E2.pos.y, pl.x, pl.y)
+check("guard: never strays further than the leash from V", to_v < 21.5, f"{to_v:.1f} m from V")
+pl.y = pl.y + 40
+foe2 = G.spawnNPC(pl.x - 5, pl.y + 3, 0.0)
+foe2.fighting = True
+foe.dead = True; step(6)
+fl = last_fire()
+check("guard: moves on to the next enemy when one is down", fl.target.eid == foe2.eid)
+H.hotkeys["eddie_stop"](); step(0.5); n4 = len(env.fires); step(1)
+check("guard: off -> stops fighting on its own", len(env.fires) == n4)
+foe2.dead = True
+H.hotkeys["eddie_weapon_left"](); step(2)
+L1 = env.entities[drops[3]]
+ep, ef, up = held_err("l", L1)
+check("weapons: left hand too", len(drops) == 3 and ep < 1e-6 and ef < 1e-6 and up > 0.9, f"{ep:.2e} m up.z={up:.2f}")
+z_held = R1.pos.z
+H.hotkeys["eddie_grip"](); step(0.15)
+check("weapons: released weapons fall", 0.03 < R1.pos.z < z_held - 0.05 and 0.03 < L1.pos.z < z_held,
+      f"z {z_held:.2f} -> {R1.pos.z:.2f}")
+step(2)
+ep, _ = arm_err(reach_q())
+check("weapons: opening the grippers lets go", ep < 1e-5, f"{ep:.2e} m")
+
+
+def lying(d):
+    q = d.rot._q
+    return abs(qrot(q, (0, 0, 1))[2]) < 1e-6 and abs(qrot(q, (0, 1, 0))[2]) < 1e-6
+
+
+check("weapons: they land on the floor, lying on their side",
+      all(abs(d.pos.z - 0.03) < 1e-9 and lying(d) for d in (R1, L1)), f"z {R1.pos.z:.3f} / {L1.pos.z:.3f}")
+n1, n2 = R1.tpn, L1.tpn; step(1)
+check("weapons: and stay there", R1.tpn == n1 and L1.tpn == n2)
+H.hotkeys["eddie_weapon_right"](); step(2)
+env.entities[drops[4]] = None  # V picks it up
+step(2)
+ep, _ = arm_err(reach_q())
+check("weapons: picked up -> gripper opens", ep < 1e-5, f"{ep:.2e} m")
+env.weapon.delay = 10 ** 9
+H.hotkeys["eddie_weapon_left"](); step(5)
+ep, _ = arm_err(reach_q())
+check("weapons: gives up if the drop never shows", len(drops) == 4 and ep < 1e-5, f"{ep:.2e} m")
+env.weapon.delay = 3
+env.setHookOff(True)
+H.hotkeys["eddie_weapon_right"](); step(1.0)
+S1 = env.entities[drops[len(drops)]]
+ep, ef, _ = held_err("r", S1) if S1.rot is not None else (1, 1, 0)
+check("weapons: found by scanning when the attach hook doesn't fire", ep < 1e-6 and ef < 1e-6, f"{ep:.2e} m")
+env.setHookOff(False)
+H.hotkeys["eddie_weapon_drop"](); step(0.5)
+env.setLootRefuses(True); n_drops = len(drops)
+H.hotkeys["eddie_weapon_right"](); step(4)  # the game's return value can't be trusted: noticed after the wait
+check("weapons: a refused drop leaves V no extra copy", env.inventory.n == 0 and len(drops) == n_drops)
+env.setLootRefuses(False)
+far = env.entities[drops[1]]
+check("weapons: other drops nearby are left alone", far.tpn is None)
+H.hotkeys["eddie_weapon_right"](); step(1.0)
+D = env.entities[drops[len(drops)]]
+H.hotkeys["despawn_eddie"](); step(2)
+check("weapons: despawning Eddie drops its weapons to the floor", abs(D.pos.z - 0.03) < 1e-9 and lying(D), f"z {D.pos.z:.3f}")
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)
